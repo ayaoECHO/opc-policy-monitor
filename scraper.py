@@ -37,6 +37,7 @@ def parse_to_markdown(paragraphs):
 
 def run():
     db = {}
+    # 1. 加载旧数据
     if os.path.exists('data.json'):
         try:
             with open('data.json', 'r', encoding='utf-8') as f:
@@ -46,12 +47,10 @@ def run():
 
     headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
 
-    # 关键修改点：外层循环控制站点，内层循环控制翻页
     for site, base_url in TARGETS.items():
         print(f"正在扫描/回溯站点: {site}")
         
-        for page in range(1, 6):  # 翻 5 页，足以覆盖 3 月份及更早的历史
-            # 处理翻页 URL 规律（大多数政府网站采用 _1, _2 这种后缀）
+        for page in range(1, 6):  
             if page == 1:
                 current_url = base_url
             else:
@@ -88,17 +87,25 @@ def run():
                 
                 print(f"  - 第 {page} 页处理完毕")
                 if not found_new_on_page and page > 1:
-                    # 如果这一页没发现任何新东西，且不是第一页，通常意味着没必要再往后翻了
                     break
                     
             except Exception as e:
                 print(f"  - {site} 第 {page} 页异常: {e}")
                 break
 
-    # 保持 data.json 的物理存储
-    final_data = sorted(db.values(), key=lambda x: x.get('date', ''), reverse=True)
+    # 2. 核心改进：在保存前对所有数据进行一次深度清理
+    processed_data = []
+    for item in db.values():
+        # 清理所有的 <br> 标签，替换为 Markdown 换行符
+        if "content" in item:
+            item["content"] = item["content"].replace("<br>", "  \n")
+        processed_data.append(item)
+
+    # 3. 按日期倒序排列并写入
+    final_data = sorted(processed_data, key=lambda x: x.get('date', ''), reverse=True)
     with open('data.json', 'w', encoding='utf-8') as f:
         json.dump(final_data, f, ensure_ascii=False, indent=4)
+    print("✨ 数据抓取并自动清理完成！")
 
 if __name__ == "__main__":
     run()
