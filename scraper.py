@@ -5,7 +5,7 @@ import datetime
 import os
 import re
 
-# 目标站点：聚焦成都 AI & OPC 核心发布源
+# 目标发布源
 TARGETS = {
     "成都市经信局": "https://cdjx.chengdu.gov.cn/cdjx/c115217/jsj_list.shtml",
     "成都高新区": "https://www.cdht.gov.cn/cdht/c139391/gk_list.shtml",
@@ -13,83 +13,92 @@ TARGETS = {
     "红星新闻": "https://www.cdsb.com/"
 }
 
-# 严格过滤：必须同时满足（领域词）+（政策动作词）
-CORE_DOMAINS = ["一人公司", "OPC", "人工智能", "AI", "大模型"]
+# 严格过滤关键词
+CORE_DOMAINS = ["一人公司", "OPC", "人工智能", "AI", "智能体", "大模型"]
 ACTION_WORDS = ["补贴", "政策", "措施", "奖励", "资助", "扶持", "申报", "征求意见"]
-EXCLUDE_WORDS = ["个体工商户", "个人独资", "农业", "房地产"]
+EXCLUDE_WORDS = ["个体工商户", "个人独资", "农业", "养殖"]
 
 def is_target_policy(title):
-    t = title.upper()
-    has_domain = any(d in t for d in CORE_DOMAINS)
-    has_action = any(a in t for a in ACTION_WORDS)
-    is_clean = not any(e in t for e in EXCLUDE_WORDS)
-    return has_domain and has_action and is_clean
+    title_upper = title.upper()
+    has_domain = any(dom in title_upper for dom in CORE_DOMAINS)
+    has_action = any(act in title_upper for act in ACTION_WORDS)
+    is_not_excluded = not any(ex in title_upper for ex in EXCLUDE_WORDS)
+    return has_domain and has_action and is_not_excluded
 
-def parse_to_structured_markdown(text_list):
-    """
-    仿照你的手工文档，将散乱的段落重组为带标题的条文格式
-    """
-    structured_content = ""
-    for text in text_list:
-        # 识别条款序号，自动加粗作为小标题
-        if re.match(r'第[一二三四五六七八九十\d]+条', text):
-            structured_content += f"\n\n### {text}\n"
-        elif any(kw in text for kw in ["万元", "%", "补贴", "支持"]):
-            # 包含金额和比例的句子，自动标记为重点
-            structured_content += f"- **核心干货**：{text}\n"
+def parse_to_markdown(paragraphs):
+    """简单格式化，确保干货被识别"""
+    content = ""
+    for p in paragraphs:
+        if re.search(r'第[一二三四五六七八九十\d]+条|万元|%|补贴|支持', p):
+            content += f"- **核心干货**：{p}\n"
         else:
-            structured_content += f"{text}\n"
-    return structured_content
+            content += f"{p}\n"
+    return content
 
 def run():
     db = {}
     if os.path.exists('data.json'):
-        with open('data.json', 'r', encoding='utf-8') as f:
-            try:
-                db = {item['title']: item for item in json.load(f)}
-            except: pass
+        try:
+            with open('data.json', 'r', encoding='utf-8') as f:
+                items = json.load(f)
+                db = {item['title']: item for item in items}
+        except: pass
 
     headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
-    
-    for site, url in TARGETS.items():
-        try:
-            resp = requests.get(url, headers=headers, timeout=20)
-            resp.encoding = 'utf-8'
-            soup = BeautifulSoup(resp.text, 'html.parser')
+
+    # 关键修改点：外层循环控制站点，内层循环控制翻页
+    for site, base_url in TARGETS.items():
+        print(f"正在扫描/回溯站点: {site}")
+        
+        for page in range(1, 6):  # 翻 5 页，足以覆盖 3 月份及更早的历史
+            # 处理翻页 URL 规律（大多数政府网站采用 _1, _2 这种后缀）
+            if page == 1:
+                current_url = base_url
+            else:
+                current_url = base_url.replace(".shtml", f"_{page-1}.shtml")
             
-            for a in soup.find_all('a', href=True):
-                title = a.get_text().strip()
-                if is_target_policy(title):
-                    full_url = a['href'] if a['href'].startswith('http') else url.rsplit('/', 1)[0] + '/' + a['href']
-                    
-                    # 抓取详情并结构化
-                    detail_resp = requests.get(full_url, headers=headers, timeout=15)
-                    detail_resp.encoding = 'utf-8'
-                    detail_soup = BeautifulSoup(detail_resp.text, 'html.parser')
-                    
-                    # 提取含金量高的段落
-                    paragraphs = [p.get_text().strip() for p in detail_soup.find_all(['p', 'div']) 
-                                 if len(p.get_text().strip()) > 10]
-                    
-                    new_content = parse_to_structured_markdown(paragraphs)
-                    
-                    if title in db:
-                        # 合并新旧内容，去重并保持结构
-                        db[title]['content'] = list(set(db[title]['content'].split('\n') + new_content.split('\n')))
-                        db[title]['content'] = '\n'.join(db[title]['content'])
-                        if full_url not in db[title]['urls']: db[title]['urls'].append(full_url)
-                    else:
+            try:
+                resp = requests.get(current_url, headers=headers, timeout=20)
+                resp.encoding = 'utf-8'
+                soup = BeautifulSoup(resp.text, 'html.parser')
+                
+                links = soup.find_all('a', href=True)
+                found_new_on_page = False
+                
+                for a in links:
+                    title = a.get_text().strip()
+                    if is_target_policy(title) and title not in db:
+                        href = a['href']
+                        full_url = href if href.startswith('http') else base_url.rsplit('/', 1)[0] + '/' + href
+                        
+                        # 抓取正文
+                        detail_resp = requests.get(full_url, headers=headers, timeout=15)
+                        detail_resp.encoding = 'utf-8'
+                        detail_soup = BeautifulSoup(detail_resp.text, 'html.parser')
+                        paragraphs = [p.get_text().strip() for p in detail_soup.find_all(['p', 'div']) if len(p.get_text().strip()) > 10]
+                        
                         db[title] = {
                             "title": title,
                             "date": datetime.datetime.now().strftime("%Y-%m-%d"),
                             "source": site,
                             "urls": [full_url],
-                            "content": new_content
+                            "content": parse_to_markdown(paragraphs)
                         }
-        except Exception as e: print(f"{site} error: {e}")
+                        found_new_on_page = True
+                
+                print(f"  - 第 {page} 页处理完毕")
+                if not found_new_on_page and page > 1:
+                    # 如果这一页没发现任何新东西，且不是第一页，通常意味着没必要再往后翻了
+                    break
+                    
+            except Exception as e:
+                print(f"  - {site} 第 {page} 页异常: {e}")
+                break
 
+    # 保持 data.json 的物理存储
+    final_data = sorted(db.values(), key=lambda x: x.get('date', ''), reverse=True)
     with open('data.json', 'w', encoding='utf-8') as f:
-        json.dump(list(db.values()), f, ensure_ascii=False, indent=4)
+        json.dump(final_data, f, ensure_ascii=False, indent=4)
 
 if __name__ == "__main__":
     run()
