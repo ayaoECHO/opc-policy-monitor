@@ -1,27 +1,30 @@
 name: OPC Policy Bot
 
 on:
+  workflow_dispatch: # 手动运行开关
   schedule:
-    - cron: '0 0,6 * * *' # 北京时间每天 08:00 和 14:00 自动运行
-  workflow_dispatch:      # 允许你手动点击按钮运行
+    - cron: '0 0,6 * * *' # 自动运行时间
 
 jobs:
   build:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write # 必须赋予写入权限
+    
     steps:
       - name: Checkout code
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
 
       - name: Set up Python
         uses: actions/setup-python@v4
         with:
-          python-version: '3.10'
+          python-version: '3.9'
 
       - name: Install dependencies
         run: |
           pip install requests beautifulsoup4
 
-      - name: Run scraper
+      - name: Run Scraper
         run: python scraper.py
 
       - name: Commit and Push
@@ -29,5 +32,6 @@ jobs:
           git config --global user.name "PolicyBot"
           git config --global user.email "bot@opc.com"
           git add data.json
-          git commit -m "Update policy data" || exit 0
-          git push
+          # 哪怕今天没抓到新政策，也要显示成功，不报红叉
+          git commit -m "Auto-update policy data" || echo "No changes"
+          git push || echo "No changes"
